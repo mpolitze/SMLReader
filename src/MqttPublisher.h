@@ -25,6 +25,7 @@ struct MqttConfig
   char username[128] = "";
   char password[128] = "";
   char topic[128] = "iot/smartmeter/";
+  char jsonPayload[9] = "";
 };
 
 class MqttPublisher
@@ -43,7 +44,17 @@ public:
     }
 
     client.setCleanSession(true);
-    client.setWill(String(baseTopic + MQTT_LWT_TOPIC).c_str(), MQTT_LWT_QOS, MQTT_LWT_RETAIN, MQTT_LWT_PAYLOAD_OFFLINE);
+    if(config.jsonPayload[0] == 's')
+    {
+      const char* willTopic = String(baseTopic + MQTT_LWT_TOPIC).c_str();
+      const char* buf = new_json_wrap(willTopic, MQTT_LWT_PAYLOAD_OFFLINE);
+      client.setWill(willTopic, MQTT_LWT_QOS, MQTT_LWT_RETAIN, buf);
+      delete buf;
+    }
+    else
+    {
+      client.setWill(String(baseTopic + MQTT_LWT_TOPIC).c_str(), MQTT_LWT_QOS, MQTT_LWT_RETAIN, MQTT_LWT_PAYLOAD_OFFLINE);
+    }
     client.setKeepAlive(MQTT_RECONNECT_DELAY * 3);
 
     this->registerHandlers();
@@ -139,6 +150,11 @@ public:
     client.disconnect();
   }
 
+  bool isConnected()
+  { 
+    return connected; 
+  }
+
 private:
   bool connected = false;
   MqttConfig config;
@@ -166,13 +182,51 @@ private:
     if (this->connected)
     {
       DEBUG(F("MQTT: Publishing to %s:"), topic);
-      DEBUG(F("%s\n"), payload);
-      client.publish(topic, payload, strlen(payload), qos, retain);
+      if(config.jsonPayload[0] == 's')
+      {
+        const char* buf = new_json_wrap(topic, payload);
+        DEBUG(F("%s\n"), buf);
+        client.publish(topic, buf, strlen(buf), qos, retain);
+        delete buf;
+      }
+      else
+      {        
+        DEBUG(F("%s\n"), payload);
+        client.publish(topic, payload, strlen(payload), qos, retain);
+      }
     }
+  }
+
+  const char* new_json_wrap(const char* topic, const char* payload)
+  {
+    const char* subtopic = topic + baseTopic.length();
+    size_t bufsize = strlen(payload) + strlen(subtopic) + 8;
+    char* buf = new char[bufsize];
+    bool payloadIsNumber = true;
+    for (const char* i = payload; *i != '\0'; i++)
+    {
+        if (!isdigit(*i))
+        {
+          payloadIsNumber = false;
+          break;
+        }
+    }
+    if(payloadIsNumber)
+    {
+      sniprintf(buf, bufsize, "{\"%s\":%s}", subtopic, payload);
+    }
+    else
+    {
+      sniprintf(buf, bufsize, "{\"%s\":\"%s\"}", subtopic, payload);
+    }    
+    return buf;
   }
 
   void registerHandlers()
   {
+    client.onMessage([this](const char* topic, const uint8_t* payload, size_t len, uint8_t qos, bool retain, bool dup){
+        DEBUG("MQTT Message: [%s]: %s", topic, payload);
+    });
     client.onConnect([this](bool sessionPresent) {
       this->connected = true;
       reconnectTimer.detach();
@@ -181,6 +235,12 @@ private:
       snprintf(message, 64, "Hello from %08X, running SMLReader version %s.", ESP.getChipId(), VERSION);
       info(message);
       publish(baseTopic + MQTT_LWT_TOPIC, MQTT_LWT_PAYLOAD_ONLINE, MQTT_LWT_QOS, MQTT_LWT_RETAIN);
+  
+      DEBUG(F("MQTT subscribing config topic..."));
+      client.subscribe("v1/devices/me/attributes", 2);
+
+      DEBUG(F("MQTT requesting config ..."));
+      client.publish("v1/devices/me/attributes/request/1", "{\"sharedKeys\":\"deepSleepInterval\"}", 34, 2);
     });
     client.onDisconnect([this](int8_t reason) {
       this->connected = false;
