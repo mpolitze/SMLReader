@@ -1,0 +1,1 @@
+docker run -it --rm -v${PWD}:/root/src -ePLATFORMIO_CORE_DIR=.pio shaguarger/platformio /bin/sh -c "cd ~/src && /bin/bash"
